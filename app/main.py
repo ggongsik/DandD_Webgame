@@ -4,13 +4,12 @@ from flask import Blueprint, render_template, redirect, url_for, jsonify, reques
 from flask_login import current_user, login_required
 # ⭐️ Item, Spell, CharacterInventory 모델 임포트
 from app.models import db, Character, Item, Spell, CharacterInventory
-from collections import Counter
+from collections import Counter # 아이템 수량 비교를 위한 Counter
 
 bp = Blueprint('main', __name__)
 
 @bp.route('/')
 def index():
-    # ... (기존과 동일)
     if current_user.is_authenticated:
         return redirect(url_for('main.game'))
     return redirect(url_for('auth.login'))
@@ -18,7 +17,6 @@ def index():
 @bp.route('/game')
 @login_required
 def game():
-    # ... (기존과 동일)
     return render_template('index.html')
 
 @bp.route('/api/game_state', methods=['GET'])
@@ -29,13 +27,13 @@ def get_game_state():
     if not character:
         return jsonify({"error": "Character not found"}), 404
     
-    # ⭐️ character.to_dict()가 모든 M:N 관계를 조회하여 JSON으로 변환해줌
+    # character.to_dict()가 동적으로 플래그를 계산하므로 그대로 사용
     return jsonify(character.to_dict())
 
 @bp.route('/api/game_state', methods=['POST'])
 @login_required
 def save_game_state():
-    """ [SAVE] JS의 JSON을 받아 관계형 DB에 분해하여 저장 (핵심 로직) """
+    """ ⭐️ [SAVE] Differential Update / UPSERT 로직 구현 (최소 변경) ⭐️ """
     data = request.json
     character = current_user.character
     
@@ -43,7 +41,7 @@ def save_game_state():
         return jsonify({"error": "Character not found"}), 404
         
     try:
-        # 1. Character 기본 스탯 업데이트 (JSON -> characters 테이블)
+        # 1. Characters 테이블 기본 스탯 업데이트 (최소 변경)
         character.name = data.get('name', character.name)
         stats = data.get('stats', {})
         character.hp = stats.get('hp', character.hp)
@@ -52,6 +50,8 @@ def save_game_state():
         character.stat_int = stats.get('int', character.stat_int)
         character.stat_dex = stats.get('dex', character.stat_dex)
         character.stat_luk = stats.get('luk', character.stat_luk)
+        
+        # ⭐️ maxHp/maxMp 포함한 모든 플래그 없는 스탯 업데이트
         character.max_hp = data.get('maxHp', character.max_hp)
         character.max_mp = data.get('maxMp', character.max_mp)
         character.gold = data.get('gold', character.gold)
@@ -59,43 +59,70 @@ def save_game_state():
         character.xp = data.get('xp', character.xp)
         character.xp_to_next_level = data.get('xpToNextLevel', character.xp_to_next_level)
         character.stat_points = data.get('statPoints', character.stat_points)
-        character.has_robber_knife = data.get('hasRobberKnife', character.has_robber_knife)
-        character.has_excalibur = data.get('hasExcalibur', character.has_excalibur)
-        character.has_comet_axe = data.get('hasCometAxe', character.has_comet_axe)
-        character.has_yamato = data.get('hasYamato', character.has_yamato)
-        character.has_cheontweseongdo = data.get('hasCheontweseongdo', character.has_cheontweseongdo)
         
-        # 2. Inventory 업데이트 (JSON List -> character_inventory 테이블)
-        # 2-1. 기존 인벤토리 삭제
-        CharacterInventory.query.filter_by(character_id=character.id).delete()
+        # 2. Inventory 업데이트 (UPSERT 로직)
         
-        # 2-2. 새 인벤토리 리스트 집계 (e.g., ["물약", "물약"] -> {"물약": 2})
-        inventory_counts = Counter(data.get('inventory', []))
+        # 2-1. 현재 DB 상태를 {item_name: CharacterInventory Object} 맵으로 변환
+        db_inventory_map = {inv.item.name: inv for inv in character.inventory_items}
         
-        # 2-3. DB 마스터 테이블과 비교하며 INSERT
-        for item_name, quantity in inventory_counts.items():
-            item_db = Item.query.filter_by(name=item_name).first()
-            if item_db:
-                inv_entry = CharacterInventory(
-                    character_id=character.id, 
-                    item_id=item_db.id, 
-                    quantity=quantity
-                )
-                db.session.add(inv_entry)
+        # 2-2. 클라이언트가 보낸 상태를 {item_name: quantity} 맵으로 집계
+        client_counts = Counter(data.get('inventory', []))
         
-        # 3. Spells 업데이트 (JSON List -> character_spells 테이블)
-        # 3-1. 기존 마법 목록 삭제 (SQLAlchemy M:N helper)
-        character.spells.clear()
+        # 2-3. 상태 비교 및 최소 변경 실행
+        all_item_names = set(db_inventory_map.keys()) | set(client_counts.keys())
+
+        for item_name in all_item_names:
+            db_entry = db_inventory_map.get(item_name)
+            client_qty = client_counts.get(item_name, 0)
+            
+            if client_qty > 0 and db_entry:
+                # UPDATE: 수량 변경
+                if db_entry.quantity != client_qty:
+                    db_entry.quantity = client_qty
+            
+            elif client_qty > 0 and not db_entry:
+                # INSERT: 새로 추가
+                item_db = Item.query.filter_by(name=item_name).first()
+                if item_db:
+                    inv_entry = CharacterInventory(
+                        character_id=character.id, 
+                        item_id=item_db.id, 
+                        quantity=client_qty
+                    )
+                    db.session.add(inv_entry)
+            
+            elif client_qty == 0 and db_entry:
+                # DELETE: 아이템 소진/판매
+                db.session.delete(db_entry)
+
+
+        # 3. Spells 업데이트 (Differential Update)
         
-        # 3-2. DB 마스터 테이블과 비교하며 INSERT
-        for spell_name in data.get('spells', []):
+        # 3-1. 현재 DB의 마법 이름 목록
+        db_spells = {spell.name for spell in character.spells}
+        
+        # 3-2. 클라이언트가 보낸 마법 이름 목록
+        client_spells = set(data.get('spells', []))
+        
+        # 3-3. 추가/삭제 비교
+        spells_to_add = client_spells - db_spells
+        spells_to_remove = db_spells - client_spells
+        
+        # INSERT (새로 배운 마법)
+        for spell_name in spells_to_add:
             spell_db = Spell.query.filter_by(name=spell_name).first()
             if spell_db:
-                character.spells.append(spell_db)
-        
+                character.spells.append(spell_db) # SQLAlchemy가 INSERT 처리
+                
+        # DELETE (잊거나 잃어버린 마법)
+        for spell_name in spells_to_remove:
+            spell_db = Spell.query.filter_by(name=spell_name).first()
+            if spell_db:
+                character.spells.remove(spell_db) # SQLAlchemy가 DELETE 처리
+
         # 4. 모든 변경사항 커밋
         db.session.commit()
-        return jsonify({"message": "Game saved successfully (Relational)"})
+        return jsonify({"message": "Game saved successfully (A+ Relational Update)"})
 
     except Exception as e:
         db.session.rollback()

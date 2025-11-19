@@ -1,20 +1,61 @@
 # app/models.py
 
-# ⭐️ from app import db, login_manager  <- 이 줄을 아래와 같이 수정
-from app import db 
+from app import db
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 import json
+from sqlalchemy.orm import relationship, backref # relationship 임포트
 
-# ⭐️ @login_manager.user_loader 로 시작하는 함수 전체를 여기서 삭제합니다.
+# -----------------------------------------------------------------
+# ⭐️ 1. M:N 매핑 테이블 (Association Tables) 정의
+# -----------------------------------------------------------------
+class CharacterInventory(db.Model):
+    __tablename__ = 'character_inventory'
+    character_id = db.Column(db.Integer, db.ForeignKey('characters.id'), primary_key=True)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), primary_key=True)
+    quantity = db.Column(db.Integer, nullable=False, default=1)
 
+    item = relationship('Item', back_populates='characters')
+    character = relationship('Character', back_populates='inventory_items')
+
+character_spells = db.Table('character_spells',
+    db.Column('character_id', db.Integer, db.ForeignKey('characters.id'), primary_key=True),
+    db.Column('spell_id', db.Integer, db.ForeignKey('spells.id'), primary_key=True)
+)
+
+# -----------------------------------------------------------------
+# ⭐️ 2. 마스터 테이블 (Item / Spell)
+# (변경 없음 - 이전 코드 그대로 사용)
+# -----------------------------------------------------------------
+class Item(db.Model):
+    __tablename__ = 'items'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    description = db.Column(db.Text)
+    price = db.Column(db.Integer, default=0)
+    
+    characters = relationship('CharacterInventory', back_populates='item')
+
+class Spell(db.Model):
+    __tablename__ = 'spells'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    description = db.Column(db.Text)
+    mana_cost = db.Column(db.Integer, default=5)
+    
+    owners = relationship('Character', secondary=character_spells, back_populates='spells')
+
+
+# -----------------------------------------------------------------
+# ⭐️ 3. 기본 테이블 (User / Character)
+# -----------------------------------------------------------------
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(64), index=True, unique=True, nullable=False)
     password_hash = db.Column(db.String(128))
     
-    character = db.relationship('Character', back_populates='user', uselist=False, cascade="all, delete-orphan")
+    character = relationship('Character', back_populates='user', uselist=False, cascade="all, delete-orphan")
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -23,14 +64,11 @@ class User(UserMixin, db.Model):
         return check_password_hash(self.password_hash, password)
 
 class Character(db.Model):
-    # ... (이하 Character 모델 코드는 변경 없음) ...
     __tablename__ = 'characters'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), unique=True, nullable=False)
     
     name = db.Column(db.String(100), default='플레이어')
-    
-    # Stats
     hp = db.Column(db.Integer, default=100)
     mp = db.Column(db.Integer, default=50)
     stat_str = db.Column(db.Integer, default=12)
@@ -38,83 +76,55 @@ class Character(db.Model):
     stat_dex = db.Column(db.Integer, default=10)
     stat_luk = db.Column(db.Integer, default=8)
     
+    # ⭐️ [추가] 클라이언트 계약 준수 및 데이터 소스 명확화
     max_hp = db.Column(db.Integer, default=100)
     max_mp = db.Column(db.Integer, default=50)
-    gold = db.Column(db.Integer, default=1000)
     
-    # Level / XP
+    gold = db.Column(db.Integer, default=1000)
     level = db.Column(db.Integer, default=1)
     xp = db.Column(db.Integer, default=0)
     xp_to_next_level = db.Column(db.Integer, default=5)
     stat_points = db.Column(db.Integer, default=0)
 
-    # Flags
-    has_robber_knife = db.Column(db.Boolean, default=False)
-    has_excalibur = db.Column(db.Boolean, default=False)
-    has_comet_axe = db.Column(db.Boolean, default=False)
-    has_yamato = db.Column(db.Boolean, default=False)
-    has_cheontweseongdo = db.Column(db.Boolean, default=False)
-
-    inventory_json = db.Column(db.Text, default='[]')
-    spells_json = db.Column(db.Text, default='["불태우기"]')
-
-    user = db.relationship('User', back_populates='character')
+    # ❌ [제거] 모든 has_ 플래그 제거 (3NF 준수)
+    
+    user = relationship('User', back_populates='character')
+    inventory_items = relationship('CharacterInventory', back_populates='character', cascade="all, delete-orphan")
+    spells = relationship('Spell', secondary=character_spells, back_populates='owners')
 
     def to_dict(self):
-        # ... (to_dict 메서드) ...
+        """ JS의 Player.fromPlainObject()가 요구하는 형태를 동적으로 생성 """
+        
+        # 1. 인벤토리 목록 생성 (수량 기반 이름 목록)
+        inventory_list = []
+        for inv_item in self.inventory_items:
+            # item 객체와 quantity를 사용하여 비정규화된 이름 목록 생성
+            if inv_item.item:
+                inventory_list.extend([inv_item.item.name] * inv_item.quantity)
+        
+        # 2. ⭐️ [핵심] 플래그 동적 계산: 인벤토리를 조회하여 플래그를 생성합니다.
+        has_items = {item.item.name: True for item in self.inventory_items}
+
         return {
             "name": self.name,
             "stats": {
-                "hp": self.hp,
-                "mp": self.mp,
-                "str": self.stat_str,
-                "int": self.stat_int,
-                "dex": self.stat_dex,
-                "luk": self.stat_luk,
+                "hp": self.hp, "mp": self.mp, "str": self.stat_str,
+                "int": self.stat_int, "dex": self.stat_dex, "luk": self.stat_luk,
             },
             "maxHp": self.max_hp,
             "maxMp": self.max_mp,
             "gold": self.gold,
-            "inventory": json.loads(self.inventory_json),
-            "spells": json.loads(self.spells_json),
+            "inventory": inventory_list,
+            "spells": [spell.name for spell in self.spells],
             "level": self.level,
             "xp": self.xp,
             "xpToNextLevel": self.xp_to_next_level,
             "statPoints": self.stat_points,
-            "hasRobberKnife": self.has_robber_knife,
-            "hasExcalibur": self.has_excalibur,
-            "hasCometAxe": self.has_comet_axe,
-            "hasYamato": self.has_yamato,
-            "hasCheontweseongdo": self.has_cheontweseongdo
+            
+            # ⭐️ 동적 플래그 반환 (3NF를 지키면서 프론트엔드 호환성 유지)
+            "hasRobberKnife": has_items.get('노상강도의 칼', False),
+            "hasExcalibur": has_items.get('엑스칼리버', False),
+            "hasCometAxe": has_items.get('혜성의 도끼', False),
+            "hasYamato": has_items.get('야마토', False),
+            "hasCheontweseongdo": has_items.get('천퇴성도', False),
         }
-
-
-    def from_dict(self, data):
-        # ... (from_dict 메서드) ...
-        self.name = data.get('name', self.name)
-        
-        stats = data.get('stats', {})
-        self.hp = stats.get('hp', self.hp)
-        self.mp = stats.get('mp', self.mp)
-        self.stat_str = stats.get('str', self.stat_str)
-        self.stat_int = stats.get('int', self.stat_int)
-        self.stat_dex = stats.get('dex', self.stat_dex)
-        self.stat_luk = stats.get('luk', self.stat_luk)
-
-        self.max_hp = data.get('maxHp', self.max_hp)
-        self.max_mp = data.get('maxMp', self.max_mp)
-        self.gold = data.get('gold', self.gold)
-        
-        self.inventory_json = json.dumps(data.get('inventory', []))
-        self.spells_json = json.dumps(data.get('spells', ["불태우기"]))
-
-        self.level = data.get('level', self.level)
-        self.xp = data.get('xp', self.xp)
-        self.xp_to_next_level = data.get('xpToNextLevel', self.xp_to_next_level)
-        self.stat_points = data.get('statPoints', self.stat_points)
-        
-        self.has_robber_knife = data.get('hasRobberKnife', self.has_robber_knife)
-        self.has_excalibur = data.get('hasExcalibur', self.has_excalibur)
-        self.has_comet_axe = data.get('hasCometAxe', self.has_comet_axe)
-        self.has_yamato = data.get('hasYamato', self.has_yamato)
-        self.has_cheontweseongdo = data.get('hasCheontweseongdo', self.has_cheontweseongdo)
