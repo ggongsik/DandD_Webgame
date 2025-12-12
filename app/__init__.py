@@ -13,7 +13,7 @@ login_manager.login_message = '로그인이 필요합니다.'
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
-
+    app.config['SQLALCHEMY_ECHO'] = True
     db.init_app(app)
     login_manager.init_app(app)
 

@@ -70,51 +70,249 @@ class BuffSpell extends Spell {
         game.addCombatLog(`${caster.name}이(가) ${target.name}의 머리 위에 불길한 혜성을 소환합니다! (1턴 후 충돌)`);
     }
 }
-class MultiHitSpell extends Spell {
-    constructor(name, manaCost, description) { super(name, manaCost, description); }
+
+// [game.js] ApproachingStormSpell 클래스 수정
+
+class ApproachingStormSpell extends Spell {
+    constructor(name, manaCost, description) {
+        super(name, manaCost, description);
+    }
+
+    // 헬퍼 함수
+    wait(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
     async cast(caster, target) {
-        game.addCombatLog(`<span class="text-red-600 font-bold">${caster.name}이(가) 초절맹호살격난참을 시전합니다!</span>`);
+        // 1. [Intro] 시동 대사
+        game.addCombatLog(`<br><span class="text-blue-400 font-black text-2xl" style="text-shadow: 0 0 10px blue; font-family: serif;">"I AM THE STORM THAT IS APPROACHING..."</span>`);
+        await this.wait(800); 
+
+        // 2. [Calculation & Action] 20연타 로그 "와바박"
         let totalDamage = 0;
+        let totalBleedStack = 0;
+        let isBurnApplied = false;
+        let hitCount = 20;
+        
+        // 시각적 연출용 문자들 (날카로운 선 위주)
+        const slashChars = ['╲', '╱', '╳', '＋', '⚡', '✦', '⌁', '✴', '－', '│'];
+
+        // 온히트 효과 체크 (첫 타격에만 소모)
+        let activeEffect = caster.nextAttackEffect; 
+        caster.nextAttackEffect = null; 
+
+        for (let i = 0; i < hitCount; i++) {
+            if (!target.isAlive()) break;
+
+            // A. 데미지 계산
+            const baseDamage = d(20) + Math.floor(caster.stats.str / 2);
+            let hitDamage = Math.floor((baseDamage * 0.15) * 1.5);
+            if (hitDamage < 1) hitDamage = 1;
+            totalDamage += hitDamage;
+
+            // B. 온히트 효과 계산
+            if (i === 0 && activeEffect) {
+                if (activeEffect.type === 'burn') isBurnApplied = true;
+                else if (activeEffect.type === 'bleedMagicSword') {
+                    totalBleedStack += 3;
+                    if (target.bleed > 0) totalDamage += (target.bleed * 3); 
+                }
+            }
+            if (caster.hasRobberKnife && d(20) >= 14) {
+                const bleedAmount = Math.round(caster.stats.luk / 4);
+                if (bleedAmount > 0) totalBleedStack += bleedAmount;
+            }
+
+            // C. 로그 출력 (와바박!)
+            // 랜덤 스타일 생성 (크기, 투명도, 회전)
+            const char = slashChars[Math.floor(Math.random() * slashChars.length)];
+            const size = Math.random() > 0.5 ? 'text-xl' : 'text-sm';
+            const opacity = Math.random() > 0.5 ? 'opacity-100' : 'opacity-60';
+            const rotate = `transform rotate-${Math.floor(Math.random() * 4) * 45}`;
+            
+            // 네온 효과 스타일 (파란색/하늘색 광채)
+            const neonStyle = `text-shadow: 0 0 5px #00ffff, 1px 1px 0px rgba(0,0,255,0.8);`;
+            
+            // 로그 메시지 조립: "아이콘  N타... 데미지 ?"
+            const logMsg = `
+                <div class="flex items-center gap-2 leading-none">
+                    <span class="inline-block w-4 text-center text-cyan-300 font-mono ${size} ${opacity} ${rotate}" style="${neonStyle}">${char}</span>
+                    <span class="text-gray-400 text-xs">${i + 1}타...</span>
+                    <span class="text-cyan-600 font-bold ml-1 animate-pulse">데미지 ?</span>
+                </div>
+            `;
+            
+            game.addCombatLog(logMsg);
+
+            // 속도감 조절 (40ms = 1초에 25줄 출력 -> 엄청 빠름)
+            await this.wait(40);
+        }
+
+        // 3. [The Pause] 정적
+        game.addCombatLog(`<span class="text-gray-500 text-xs tracking-widest pl-2">...공간이 뒤틀립니다.</span>`);
+        await this.wait(800); 
+
+        // 4. [The Burst] 최종 데미지 적용
+        if (target.isAlive()) {
+            target.stats.hp -= totalDamage;
+            if (totalBleedStack > 0) target.bleed += totalBleedStack;
+            if (isBurnApplied) { target.burn = 1; target.burnDamageCounter = 1; }
+
+            game.triggerScreenShake();
+            
+            // 최종 데미지 로그 (JUDGEMENT CUT 스타일)
+            game.addCombatLog(`
+                <div class="border-t-2 border-b-2 border-cyan-500 py-2 my-2 text-center bg-gray-800 bg-opacity-90">
+                    <p class="text-xs text-cyan-200 tracking-[0.5em] mb-1">JUDGEMENT CUT</p>
+                    <p class="text-6xl font-black text-white italic" style="text-shadow: 4px 4px 0px #0000ff;">${totalDamage}</p>
+                    <p class="text-sm text-yellow-400 font-bold mt-2 animate-pulse">TOTAL DESTRUCTION</p>
+                </div>
+            `);
+
+            if (totalBleedStack > 0) game.addCombatLog(`<span class="text-red-500 font-bold">>> 차원이 찢어지며 출혈이 발생합니다! (+${totalBleedStack})</span>`);
+            if (isBurnApplied) game.addCombatLog(`<span class="text-orange-500 font-bold">>> 마력의 불꽃! (화상)</span>`);
+        }
+    }
+}
+
+class MultiHitSpell extends Spell {
+    constructor(name, manaCost, description) {
+        super(name, manaCost, description);
+    }
+
+    wait(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async cast(caster, target) {
+        // [Intro] 시전 대사
+        game.addCombatLog(`<br><span class="text-red-500 font-bold text-lg">"${caster.name}의 호흡이 거칠어집니다..."</span>`);
+        await this.wait(1000); // 긴장감 조성을 위한 1초 대기
+
+        let totalDamage = 0;
+        let hits = 0;
+
+        // 5연타 루프
         for (let i = 0; i < 5; i++) {
             if (!target.isAlive()) break;
+
+            // 명중/회피 계산
             const hitRoll = d(20) + caster.stats.dex;
             const evadeRoll = target.stats.dex + d(20);
+
             if (hitRoll > evadeRoll) {
                 let baseDamage = d(20) + Math.floor(caster.stats.str / 2);
                 let bonusDamage = 0;
                 let multiplier = 1.0;
-                let hitLog = ``;
-                let detailLog = '';
+                let hitText = "";
+                let hitStyle = "";
+                let delay = 500; // 기본 딜레이
 
-                switch(i) {
-                    case 0: bonusDamage = Math.floor(caster.stats.str / 10); multiplier = 1.1; hitLog=`1타!`; break;
-                    case 1: bonusDamage = Math.floor(caster.stats.str / 10); multiplier = 1.2; hitLog=`2타!`; break;
-                    case 2: bonusDamage = Math.floor(caster.stats.str / 7); multiplier = 1.3; target.burn = 1; target.burnDamageCounter = 1; hitLog=`3타! (화상!)`; break;
-                    case 3: bonusDamage = Math.floor(caster.stats.str / 7); multiplier = 1.8; if (target.burn <= 0) { target.burn = 1; target.burnDamageCounter = 1; hitLog=`4타! (화상!)`; } else {hitLog=`4타!`}; break;
-                    case 4: 
-                        bonusDamage = Math.floor(caster.stats.str / 5); multiplier = 2.5; 
+                // 타격별 연출 및 데미지 로직
+                switch (i) {
+                    case 0: // 1타: 펑...
+                        bonusDamage = Math.floor(caster.stats.str / 10);
+                        multiplier = 1.1;
+                        hitText = "제 1격... 파(破)!";
+                        hitStyle = "text-red-400 text-lg";
+                        delay = 800; 
+                        break;
+
+                    case 1: // 2타: 펑!
+                        bonusDamage = Math.floor(caster.stats.str / 10);
+                        multiplier = 1.2;
+                        hitText = "제 2격... 멸(滅)!";
+                        hitStyle = "text-red-500 text-xl font-bold";
+                        delay = 1000;
+                        break;
+
+                    case 2: // 3타: 쿵!! (화면 흔들림 시작)
+                        bonusDamage = Math.floor(caster.stats.str / 7);
+                        multiplier = 1.3;
+                        target.burn = 1; 
+                        target.burnDamageCounter = 1;
+                        hitText = "제 3격... 굉(轟)!!";
+                        hitStyle = "text-red-600 text-2xl font-black";
+                        game.triggerScreenShake(); // 쿵!
+                        delay = 1500; // 무거운 딜레이
+                        break;
+
+                    case 3: // 4타: 쾅!!! (강한 흔들림, 긴 대기)
+                        bonusDamage = Math.floor(caster.stats.str / 7);
+                        multiplier = 1.8;
+                        if (target.burn <= 0) { target.burn = 1; target.burnDamageCounter = 1; }
+                        hitText = "제 4격... 붕(崩)!!!";
+                        hitStyle = "text-red-700 text-3xl font-black";
+                        game.triggerScreenShake(); 
+                        delay = 2000; // 가장 긴 딜레이 (긴장감)
+                        break;
+
+                    case 4: // 5타: 전력으로 간다! 퍼버벙!
+                        // 막타 전 대사 출력
+                        game.addCombatLog(`<span class="text-red-900 font-black text-sm block mt-2 mb-1 animate-pulse">"전력으로 간다... 초절맹호(超絶猛虎)!!!"</span>`);
+                        await this.wait(600); // 대사 읽을 시간
+
+                        bonusDamage = Math.floor(caster.stats.str / 5);
+                        multiplier = 2.5;
+                        
+                        // 약화 효과 적용
                         target.stats.dex = Math.floor(target.stats.dex / 2);
                         target.stats.luk = Math.floor(target.stats.luk / 2);
-                        if(target.burn > 0) {
+                        
+                        let debuffText = "";
+                        if (target.burn > 0) {
                             const burnBonus = caster.stats.int + caster.stats.luk;
                             baseDamage += burnBonus;
-                            hitLog=`5타! (약점 간파! 민첩/재주 약화!)`;
+                            debuffText = "(화염 폭발)";
                         } else {
                             target.burn = 1;
                             target.burnDamageCounter = 1;
-                            hitLog=`5타! (화상! 민첩/재주 약화!)`;
+                            debuffText = "(화상)";
                         }
+
+                        hitText = `살격난참(殺擊亂斬)!!!! ${debuffText}`;
+                        hitStyle = "text-red-600 text-4xl font-black underline decoration-red-900";
+                        game.triggerScreenShake();
+                        delay = 500;
                         break;
                 }
+
+                // 데미지 계산 및 적용
                 const finalDamage = Math.floor((baseDamage + bonusDamage) * multiplier);
                 totalDamage += finalDamage;
-                detailLog = `<small>계산: (기본 ${baseDamage} + 보너스 ${bonusDamage}) * ${multiplier} = ${finalDamage}</small>`;
+                hits++;
                 target.stats.hp -= finalDamage;
-                game.addCombatLog(`${hitLog} <span class="text-red-400">${finalDamage}</span>의 피해! ${detailLog}`);
+
+                // 로그 출력 (연출 적용)
+                game.addCombatLog(`
+                    <div class="flex items-center gap-2">
+                        <span class="${hitStyle}">${hitText}</span>
+                        <span class="text-gray-400 text-xs">-${finalDamage}</span>
+                    </div>
+                `);
+
+                // 다음 타격을 위한 대기
+                await this.wait(delay);
+
             } else {
-                game.addCombatLog(`${i + 1}타... 빗나갔다!`);
+                game.addCombatLog(`<span class="text-gray-500 text-sm">...${i + 1}타가 빗나갔습니다.</span>`);
+                await this.wait(300); // 빗나가면 빠르게 넘어감
             }
-             await new Promise(res => setTimeout(res, 500));
+        }
+
+        // [Outro] 최종 결과창 (성공적으로 1대라도 때렸다면)
+        if (hits > 0 && target.isAlive()) {
+             await this.wait(500);
+             game.addCombatLog(`
+                <div class="border-4 border-double border-red-800 py-3 my-3 text-center bg-black bg-opacity-80">
+                    <p class="text-xs text-red-500 tracking-[0.3em] mb-1 font-serif">SECRET TECHNIQUE</p>
+                    <h3 class="text-4xl font-black text-red-600 mb-1" style="text-shadow: 2px 2px 0px #000;">TIGER STRIKE</h3>
+                    <p class="text-white text-lg">TOTAL DAMAGE: <span class="text-yellow-500 font-bold text-2xl">${totalDamage}</span></p>
+                </div>
+            `);
+        } else if (!target.isAlive()) {
+             // 적이 죽었을 때
+             game.addCombatLog(`<br><span class="text-red-700 font-bold text-xl">적은 이미 산산조각 났습니다. (총 피해: ${totalDamage})</span>`);
         }
     }
 }
@@ -844,7 +1042,7 @@ const game = {
         return null; 
     },
     initializeItems() { this.shopItems = [ new ConsumableItem('체력 물약', 80, '체력을 50 회복합니다.', 'hp', 50), new ConsumableItem('마나 물약', 60, '마나를 30 회복합니다.', 'mp', 30), new StatUpgradeItem('근력 물약', 50, '근력을 1 올립니다.', 'str', 1), new StatUpgradeItem('지성 물약', 50, '지성을 1 올립니다.', 'int', 1), new StatUpgradeItem('민첩 물약', 50, '민첩을 1 올립니다.', 'dex', 1), new StatUpgradeItem('재주 물약', 50, '재주를 1 올립니다.', 'luk', 1), new EquipmentItem('튼튼한 가죽 갑옷', 300, '최대 체력 +5, 근력 +1.', [{ stat: 'maxHp', value: 5 }, { stat: 'str', value: 1 }]), new SpellScrollItem('양피지: 발화마검술', 250, '마법 [발화마검술] 습득', '발화마검술'), new SpellScrollItem('양피지: 집중', 200, '마법 [집중] 습득', '집중'), new SpellScrollItem('양피지: 신속의 주문', 300, '마법 [신속의 주문] 습득', '신속의 주문'), new SpellScrollItem('양피지: 출혈마검술', 350, '마법 [출혈마검술] 습득', '출혈마검술'), new SpellScrollItem('양피지: 혜성', 1000, '마법 [혜성] 습득', '혜성'), ]; },
-    initializeSpells() { this.knownSpells = [ new DamageSpell('불태우기', 5, '6면체 주사위 + (지력/7) 피해, 확률적 화상', { diceSides: 6, stat: 'int', divisor: 7, applyStatus: 'burn', statusDifficulty: 15 }), new BuffSpell('발화마검술', 10, '다음 공격 적중 시 화상 부여', { effectType: 'nextAttack', nextAttackEffect: 'burn' }), new BuffSpell('집중', 5, '1턴간 재주+30, 다음 공격 필중', { effectType: 'combined', stat: 'luk', value: 30, nextAttackEffect: 'autoHit' }), new BuffSpell('신속의 주문', 5, '5턴간 민첩+5', { effectType: 'stat', stat: 'dex', value: 5, duration: 5 }), new BuffSpell('출혈마검술', 10, '다음 공격에 출혈 효과 부여/강화', { effectType: 'nextAttack', nextAttackEffect: 'bleedMagicSword' }), new CometSpell('혜성', 30, '1턴 후 대상에게 혜성을 떨어뜨려 복합 피해'), new MultiHitSpell('초절맹호살격난참', 50, '적에게 5회의 연속 공격을 가합니다.'), ]; },
+    initializeSpells() { this.knownSpells = [ new DamageSpell('불태우기', 5, '6면체 주사위 + (지력/7) 피해, 확률적 화상', { diceSides: 6, stat: 'int', divisor: 7, applyStatus: 'burn', statusDifficulty: 15 }), new BuffSpell('발화마검술', 10, '다음 공격 적중 시 화상 부여', { effectType: 'nextAttack', nextAttackEffect: 'burn' }), new BuffSpell('집중', 5, '1턴간 재주+30, 다음 공격 필중', { effectType: 'combined', stat: 'luk', value: 30, nextAttackEffect: 'autoHit' }), new BuffSpell('신속의 주문', 5, '5턴간 민첩+5', { effectType: 'stat', stat: 'dex', value: 5, duration: 5 }), new BuffSpell('출혈마검술', 10, '다음 공격에 출혈 효과 부여/강화', { effectType: 'nextAttack', nextAttackEffect: 'bleedMagicSword' }), new CometSpell('혜성', 30, '1턴 후 대상에게 혜성을 떨어뜨려 복합 피해'),new ApproachingStormSpell('다가오는 폭풍', 60, '기본 공격의 15% 데미지로 20회 확정 치명타 공격. (온히트 적용)'), new MultiHitSpell('초절맹호살격난참', 50, '적에게 5회의 매우강력한 연속 공격을 가합니다.'), ]; },
     initializeEvents() {
         const createRobber = () => {
             const robber = new Enemy('노상강도', { hp: 70, mp: 20, str: 10, int: 8, dex: 10, luk: 10 }, 25);
@@ -875,21 +1073,24 @@ const game = {
                 })
             ], 'A glowing meteorite chunk embedded in the ground in a forest clearing, with an axe handle sticking out of it, fantasy art.'),
             new GameEvent('yamatoEvent', "버려진 사원 폐허에서, 푸른 빛을 내는 정교한 카타나를 발견합니다. 칼집에는 '야마토'라고 새겨져 있습니다.", [
-                new StatCheckChoice("검을 뽑아든다. (근력 15, 민첩 15)", 'str', 15, {
-                    message: "검을 뽑자, 당신의 민첩함이 검의 속도를 감당해냅니다! <br><span class='text-yellow-400'>아이템 획득: 야마토 (민첩+20, 재주+10)</span>",
+                new StatCheckChoice("검을 뽑아든다. (근력 15)", 'str', 10, {
+                    // 성공 시 메시지
+                    message: "검을 뽑자, 당신의 근력이 검의 기운을 제압합니다! <br><span class='text-yellow-400'>아이템 획득: 야마토 (민첩+20, 재주+10)</span>",
+                    // 성공 시 실행할 행동 (조건 체크 삭제함)
                     action: () => {
-                        if (game.player.stats.dex >= 15) {
-                            game.player.hasYamato = true;
-                            game.player.changeStat('dex', 20);
-                            game.player.changeStat('luk', 10);
-                            if (!game.player.inventory.includes('야마토')) game.player.inventory.push('야마토');
-                        } else {
-                            game.player.changeStat('hp', -30);
-                            game.currentEvent = new GameEvent('failYamato', "검의 날카로운 기운이 당신을 거부합니다! 깊은 상처를 입었습니다. (-30 HP)", [new Choice("다음으로", () => game.nextEvent())]);
-                            game.displayCurrentEvent();
+                        game.player.hasYamato = true;
+                        game.player.changeStat('dex', 20);
+                        game.player.changeStat('luk', 10);
+                        // 인벤토리에 확실히 추가
+                        if (!game.player.inventory.includes('야마토')) {
+                            game.player.inventory.push('야마토');
+                        }
+                        if (!game.player.spells.includes('다가오는 폭풍')) {
+                            game.player.spells.push('다가오는 폭풍');
                         }
                     }
                 }, {
+                    // 실패 시 메시지 (주사위 굴림 실패)
                     message: "검의 날카로운 기운이 당신을 거부합니다! 깊은 상처를 입었습니다. (-30 HP)",
                     action: () => { game.player.changeStat('hp', -30); }
                 })

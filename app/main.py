@@ -5,6 +5,9 @@ from flask_login import current_user, login_required
 # ⭐️ Item, Spell, CharacterInventory 모델 임포트
 from app.models import db, Character, Item, Spell, CharacterInventory
 from collections import Counter # 아이템 수량 비교를 위한 Counter
+from sqlalchemy.dialects.sqlite import insert as sqlite_upsert # ⭐️ 핵심
+from sqlalchemy import delete
+
 
 bp = Blueprint('main', __name__)
 
@@ -62,39 +65,50 @@ def save_game_state():
         
         # 2. Inventory 업데이트 (UPSERT 로직)
         
-        # 2-1. 현재 DB 상태를 {item_name: CharacterInventory Object} 맵으로 변환
-        db_inventory_map = {inv.item.name: inv for inv in character.inventory_items}
-        
-        # 2-2. 클라이언트가 보낸 상태를 {item_name: quantity} 맵으로 집계
-        client_counts = Counter(data.get('inventory', []))
-        
-        # 2-3. 상태 비교 및 최소 변경 실행
-        all_item_names = set(db_inventory_map.keys()) | set(client_counts.keys())
+       # 1. DB Hit 최소화를 위해 아이템 ID 맵핑을 한 번에 가져옴 (쿼리 1회)
+        all_items = db.session.query(Item.id, Item.name).all()
+        item_map = {name: id for id, name in all_items}
 
-        for item_name in all_item_names:
-            db_entry = db_inventory_map.get(item_name)
-            client_qty = client_counts.get(item_name, 0)
-            
-            if client_qty > 0 and db_entry:
-                # UPDATE: 수량 변경
-                if db_entry.quantity != client_qty:
-                    db_entry.quantity = client_qty
-            
-            elif client_qty > 0 and not db_entry:
-                # INSERT: 새로 추가
-                item_db = Item.query.filter_by(name=item_name).first()
-                if item_db:
-                    inv_entry = CharacterInventory(
-                        character_id=character.id, 
-                        item_id=item_db.id, 
-                        quantity=client_qty
-                    )
-                    db.session.add(inv_entry)
-            
-            elif client_qty == 0 and db_entry:
-                # DELETE: 아이템 소진/판매
-                db.session.delete(db_entry)
+        upsert_data = [] 
+        valid_item_ids = set()
 
+        # 클라이언트 데이터를 DB 입력용 리스트로 변환 (메모리 연산)
+        client_inv_names = data.get('inventory', [])
+        client_counts = Counter(client_inv_names)
+
+        for name, qty in client_counts.items():
+            if name in item_map:
+                item_id = item_map[name]
+                valid_item_ids.add(item_id)
+                upsert_data.append({
+                    "character_id": character.id,
+                    "item_id": item_id,
+                    "quantity": qty
+                })
+
+        # 2. Bulk UPSERT (쿼리 1회 실행)
+        if upsert_data:
+            # "넣어라(INSERT). 만약 PK가 겹치면 수량만 업데이트(UPDATE) 해라."
+            stmt = sqlite_upsert(CharacterInventory).values(upsert_data)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['character_id', 'item_id'], # 충돌 감지 기준
+                set_=dict(quantity=stmt.excluded.quantity)  # 덮어쓸 값
+            )
+            db.session.execute(stmt)
+
+        # 3. Bulk DELETE (쿼리 1회 실행)
+        # "이번 요청에 포함되지 않은 아이템은 인벤토리에서 삭제한다."
+        if valid_item_ids:
+            delete_stmt = delete(CharacterInventory).where(
+                CharacterInventory.character_id == character.id,
+                CharacterInventory.item_id.notin_(valid_item_ids)
+            )
+        else:
+            # 인벤토리가 비었으면 싹 비움
+            delete_stmt = delete(CharacterInventory).where(
+                CharacterInventory.character_id == character.id
+            )
+        db.session.execute(delete_stmt)
 
         # 3. Spells 업데이트 (Differential Update)
         

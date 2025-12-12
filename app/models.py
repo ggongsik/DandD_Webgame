@@ -5,18 +5,30 @@ from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 import json
 from sqlalchemy.orm import relationship, backref # relationship 임포트
+from sqlalchemy import Index, CheckConstraint # ⭐️ 필수 임포트
 
 # -----------------------------------------------------------------
 # ⭐️ 1. M:N 매핑 테이블 (Association Tables) 정의
 # -----------------------------------------------------------------
 class CharacterInventory(db.Model):
     __tablename__ = 'character_inventory'
+    
+    # 1. 컬럼 정의
     character_id = db.Column(db.Integer, db.ForeignKey('characters.id'), primary_key=True)
     item_id = db.Column(db.Integer, db.ForeignKey('items.id'), primary_key=True)
     quantity = db.Column(db.Integer, nullable=False, default=1)
 
+    # 2. [복구됨] 관계 정의 (이게 없어서 에러가 난 거다)
     item = relationship('Item', back_populates='characters')
     character = relationship('Character', back_populates='inventory_items')
+
+    # 3. 제약조건 및 인덱스 (아까 추가한 내용)
+    __table_args__ = (
+        CheckConstraint('quantity >= 0', name='check_inventory_quantity_positive'),
+        Index('idx_inventory_lookup', 'character_id', 'item_id'),
+    )
+
+
 
 character_spells = db.Table('character_spells',
     db.Column('character_id', db.Integer, db.ForeignKey('characters.id'), primary_key=True),
@@ -86,8 +98,12 @@ class Character(db.Model):
     xp_to_next_level = db.Column(db.Integer, default=5)
     stat_points = db.Column(db.Integer, default=0)
 
-    # ❌ [제거] 모든 has_ 플래그 제거 (3NF 준수)
-    
+    __table_args__ = (
+        # HP가 MaxHP보다 크거나, 음수가 되는 데이터를 원천 차단
+        CheckConstraint('hp <= max_hp', name='check_hp_limit'),
+        CheckConstraint('hp >= 0', name='check_hp_positive'),
+    )
+     
     user = relationship('User', back_populates='character')
     inventory_items = relationship('CharacterInventory', back_populates='character', cascade="all, delete-orphan")
     spells = relationship('Spell', secondary=character_spells, back_populates='owners')
